@@ -81,8 +81,9 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
         {
             // As per rule 2.13, we MUST consider subscription cancelled and
             // MUST raise this error condition in a fashion that is adequate for the runtime environment.
-            subscription.cancel(new Suppressed(err));
-            LOG.error("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
+            subscription.cancel(new SuppressedException(err));
+            if (LOG.isTraceEnabled())
+                LOG.trace("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
         }
     }
 
@@ -106,7 +107,8 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
         {
             // As per rule 2.13, we MUST consider subscription cancelled and
             // MUST raise this error condition in a fashion that is adequate for the runtime environment.
-            LOG.error("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
+            if (LOG.isTraceEnabled())
+                LOG.trace("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
         }
     }
 
@@ -168,12 +170,13 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
                 {
                     if (cancelled == COMPLETED)
                         this.subscriber.onComplete();
-                    else if (!(cancelled instanceof Suppressed))
+                    else if (!(cancelled instanceof SuppressedException))
                         this.subscriber.onError(cancelled);
                 }
                 catch (Throwable err)
                 {
-                    LOG.error("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
+                    if (LOG.isTraceEnabled())
+                        LOG.trace("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
                 }
                 this.subscriber = null;
                 return Action.SUCCEEDED;
@@ -183,8 +186,8 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
 
             if (chunk == null)
             {
-                content.demand(this::iterate);
-                return Action.IDLE;
+                content.demand(this::succeeded);
+                return Action.SCHEDULED;
             }
 
             if (Content.Chunk.isFailure(chunk))
@@ -201,8 +204,9 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
             catch (Throwable err)
             {
                 chunk.release();
-                cancel(new Suppressed(err));
-                LOG.error("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
+                cancel(new SuppressedException(err));
+                if (LOG.isTraceEnabled())
+                    LOG.trace("Flow.Subscriber " + subscriber + " violated rule 2.13", err);
                 return Action.IDLE;
             }
             chunk.release();
@@ -243,7 +247,7 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
         @Override
         public void cancel()
         {
-            cancel(new Suppressed("Subscription was cancelled manually"));
+            cancel(new SuppressedException("Subscription was cancelled manually"));
         }
 
         public void cancel(Throwable cause)
@@ -252,9 +256,8 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
             //
             // As per rule 3.5, this handles cancellation requests, and is idempotent, thread-safe and not
             // synchronously performing heavy computations
-            if (!cancelled.compareAndSet(null, cause))
-                return;
-            this.iterate();
+            if (cancelled.compareAndSet(null, cause))
+                this.iterate();
         }
 
         // Publisher notes
@@ -280,7 +283,7 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
 
         // Subscription notes
         //
-        // Subscription.cancel -> cancel(new Suppressed("Subscription was cancelled manually"))
+        // Subscription.cancel -> cancel(new SuppressedException("Subscription was cancelled manually"))
         // It's not clearly specified in the specification, but according to:
         // - the issue: https://github.com/reactive-streams/reactive-streams-jvm/issues/458
         // - TCK test 'untested_spec108_possiblyCanceledSubscriptionShouldNotReceiveOnErrorOrOnCompleteSignals'
@@ -291,14 +294,14 @@ public class ContentSourcePublisher implements Flow.Publisher<Content.Chunk>
         // java.lang.IllegalArgumentException if the argument is <= 0.
     }
 
-    private static class Suppressed extends Throwable
+    private static class SuppressedException extends Exception
     {
-        Suppressed(String message)
+        SuppressedException(String message)
         {
             super(message);
         }
 
-        Suppressed(Throwable cause)
+        SuppressedException(Throwable cause)
         {
             super(cause.getMessage(), cause);
         }
