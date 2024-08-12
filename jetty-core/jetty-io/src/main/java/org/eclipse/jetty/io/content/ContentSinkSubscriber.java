@@ -14,13 +14,15 @@
 package org.eclipse.jetty.io.content;
 
 import java.nio.ByteBuffer;
+import java.util.Objects;
 import java.util.concurrent.Flow;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.thread.Invocable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * <p>A {@link Flow.Subscriber} that wraps a {@link Content.Sink}.</p>
@@ -30,28 +32,50 @@ import org.eclipse.jetty.util.thread.Invocable;
  */
 public class ContentSinkSubscriber implements Flow.Subscriber<Content.Chunk>
 {
-    private final AtomicInteger lastAndComplete = new AtomicInteger(2);
-    private final AtomicBoolean callbackComplete = new AtomicBoolean();
-    private final Content.Sink sink;
-    private final Callback callback;
-    private Flow.Subscription subscription;
+    private static final Logger LOG = LoggerFactory.getLogger(ContentSinkSubscriber.class);
+
+    private final AtomicReference<Content.Sink> sink;
+    private final AtomicReference<Callback> callback;
+    private final AtomicReference<State> state;
 
     public ContentSinkSubscriber(Content.Sink sink, Callback callback)
     {
-        this.sink = sink;
-        this.callback = callback;
+        Objects.requireNonNull(sink, "Content.Sink must not be null");
+        Objects.requireNonNull(callback, "Callback must not be null");
+        this.sink = new AtomicReference<>(sink);
+        this.callback = new AtomicReference<>(callback);
+        this.state = new AtomicReference<>(new State());
     }
 
     @Override
     public void onSubscribe(Flow.Subscription subscription)
     {
-        this.subscription = subscription;
-        subscription.request(1);
+        // As per rule 2.13, we need to throw a `java.lang.NullPointerException`
+        // if the `Subscription` is `null`
+        Objects.requireNonNull(subscription, "Flow.Subscription must not be null");
+
+        Content.Sink sink = this.sink.getAndSet(null);
+        if (sink != null)
+        {
+            subscription.request(1);
+        }
+        else
+        {
+            subscription.cancel();
+        }
     }
 
     @Override
     public void onNext(Content.Chunk chunk)
     {
+        // As per rule 2.13, we need to throw a `java.lang.NullPointerException`
+        // if the `Content.Chunk` is `null`
+        Objects.requireNonNull(chunk, "Content.Chunk must not be null");
+
+        // TODO: before onSubscribe
+        // TODO: more elements than requested
+        // TODO: after final signal onComplete/onError
+
         // Retain the chunk because the write may not complete immediately.
         chunk.retain();
         sink.write(chunk.isLast(), chunk.getByteBuffer(), new Callback()
@@ -83,19 +107,27 @@ public class ContentSinkSubscriber implements Flow.Subscriber<Content.Chunk>
     @Override
     public void onError(Throwable failure)
     {
+        // As per rule 2.13, we need to throw a `java.lang.NullPointerException`
+        // if the `Content.Chunk` is `null`
+        Objects.requireNonNull(failure, "Throwable must not be null");
+
+        // TODO: before onSubscribe
+        // TODO: after final signal onComplete/onError
         error(failure);
+    }
+
+    @Override
+    public void onComplete()
+    {
+        // TODO: before onSubscribe
+        // TODO: after final signal onComplete/onError
+        complete();
     }
 
     private void error(Throwable failure)
     {
         if (callbackComplete.compareAndSet(false, true))
             callback.failed(failure);
-    }
-
-    @Override
-    public void onComplete()
-    {
-        complete();
     }
 
     private void complete()
@@ -108,4 +140,46 @@ public class ContentSinkSubscriber implements Flow.Subscriber<Content.Chunk>
                 callback.succeeded();
         }
     }
+
+    private sealed interface State
+    {
+
+        void onSubscribe
+
+        public static final class Ready implements State {}
+    }
 }
+
+/*
+1. onComplete без данных
+2.9/2.10 A Subscriber MUST be prepared to receive an onComplete/onError signal with or without
+a preceding Subscription.request(long n) call.
+
+2. multiple onSubscribe - надо делать cancel подписки
+2.5 A Subscriber MUST call Subscription.cancel() on the given Subscription after an
+onSubscribe signal if it already has an active Subscription.
+
+3. Subscription.request/cancel - если throws exception
+
+4. если onNext не выполняет контракт и присылает больше, чем просили
+
+5.
+Subscriber.onComplete() and Subscriber.onError(Throwable t) MUST NOT call any methods
+on the Subscription or the Publisher.
+
+Subscriber.onComplete() and Subscriber.onError(Throwable t) MUST consider the Subscription
+cancelled after having received the signal.
+
+Subscriber.onSubscribe MUST be called at most once for a
+given Subscriber (based on object equality).
+
+6. ???Может произойти StackOverflow - по идее нет
+request(1)
+  onNext(chunk)
+    sink.write()
+       request(1)
+          onNext(chunk)
+            sink.write()
+
+7. ???в конце делаем sink.write(last=true), даже если была ошибка
+*/
